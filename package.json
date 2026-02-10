@@ -1,0 +1,14 @@
+{
+  "name": "html-to-figma",
+  "version": "1.0.0",
+  "description": "Figma plugin: paste HTML/CSS and generate editable Frame and Text layers on canvas.",
+  "scripts": {
+    "build": "esbuild code.ts --bundle --outfile=code.js --target=es6",
+    "watch": "esbuild code.ts --bundle --outfile=code.js --target=es6 --watch"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.102.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}

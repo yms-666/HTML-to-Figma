@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 12px;
+      font-family: 'Inter', -apple-system, sans-serif;
+      font-size: 12px;
+      color: #333;
+      min-width: 320px;
+      max-width: 400px;
+    }
+    label { display: block; margin-bottom: 4px; font-weight: 500; }
+    #html-input {
+      width: 100%;
+      min-height: 180px;
+      padding: 8px;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 11px;
+      resize: vertical;
+    }
+    #html-input:focus {
+      outline: none;
+      border-color: #0d99ff;
+    }
+    #convert-btn {
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px 16px;
+      background: #0d99ff;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    #convert-btn:hover { background: #0b85e0; }
+    #convert-btn:active { background: #096bc2; }
+    #status {
+      margin-top: 8px;
+      min-height: 20px;
+      font-size: 11px;
+      color: #666;
+    }
+    #status.error { color: #e03e3e; }
+  </style>
+</head>
+<body>
+  <label for="html-input">粘贴 HTML（可含内联样式或 &lt;style&gt;）</label>
+  <p style="margin:4px 0 6px; font-size:11px; color:#888;">选中一个 Frame 时，将生成到该 Frame 内；未选中则生成到当前页面。</p>
+  <textarea id="html-input" placeholder="例如：&#10;&lt;div style=&quot;display:flex; padding:16px;&quot;&gt;&#10;  &lt;p&gt;Hello&lt;/p&gt;&#10;&lt;/div&gt;"></textarea>
+  <button id="convert-btn">转换为 Figma 图层</button>
+  <div id="status"></div>
+
+  <!-- 隐藏容器：用于将 HTML 字符串注入 DOM 并解析 -->
+  <div id="hidden-root" style="position:absolute;left:-9999px;top:-9999px;visibility:hidden;"></div>
+
+  <script>
+    (function () {
+      const htmlInput = document.getElementById('html-input');
+      const convertBtn = document.getElementById('convert-btn');
+      const statusEl = document.getElementById('status');
+      const hiddenRoot = document.getElementById('hidden-root');
+
+      /**
+       * 将 "123px" 或 "1.5em" 等解析为数值（px），非数值或 auto 返回 null
+       */
+      function parsePx(value) {
+        if (!value || value === 'auto' || value === '0') {
+          return value === '0' ? 0 : null;
+        }
+        const num = parseFloat(value);
+        if (isNaN(num)) return null;
+        if (value.endsWith('px')) return num;
+        if (value.endsWith('em') || value.endsWith('rem')) return num * 16;
+        return num;
+      }
+
+      /**
+       * 将 CSS 颜色（rgb/rgba/hex）解析为 { r, g, b, a }，范围 r,g,b 0-255，a 0-1
+       * 无法解析时返回 null（透明或无效）
+       */
+      function parseColor(value) {
+        if (!value || value === 'transparent' || value === 'rgba(0, 0, 0, 0)') return null;
+        const m = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)/);
+        if (m) {
+          return {
+            r: parseInt(m[1], 10),
+            g: parseInt(m[2], 10),
+            b: parseInt(m[3], 10),
+            a: m[4] != null ? parseFloat(m[4]) : 1
+          };
+        }
+        const m2 = value.match(/#([0-9a-fA-F]{6})/);
+        if (m2) {
+          const hex = m2[1];
+          return {
+            r: parseInt(hex.slice(0, 2), 16),
+            g: parseInt(hex.slice(2, 4), 16),
+            b: parseInt(hex.slice(4, 6), 16),
+            a: 1
+          };
+        }
+        return null;
+      }
+
+      /**
+       * 从 computed style 取单一圆角数值（px）
+       */
+      function parseBorderRadius(style) {
+        const v = style.borderRadius || style.borderTopLeftRadius;
+        if (!v) return 0;
+        const num = parsePx(v.split(/\s+/)[0]);
+        return num != null ? num : 0;
+      }
+
+      /**
+       * Node Tree 节点结构（与 code.ts 约定一致）：
+       * - type: 'element' | 'text'
+       * - tagName: string（仅 element）
+       * - textContent: string（可选）
+       * - styles: { display, flexDirection, justifyContent, alignItems, width, height, padding*, margin*, backgroundColor, color, borderRadius, fontSize, fontWeight, fontFamily }
+       * - children: array
+       */
+      function serializeElement(element) {
+        const tag = (element.tagName || '').toLowerCase();
+        if (tag === 'script' || tag === 'style') return null;
+
+        const style = window.getComputedStyle(element);
+        const children = [];
+        let directText = [];
+
+        for (let i = 0; i < element.childNodes.length; i++) {
+          const node = element.childNodes[i];
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const child = serializeElement(node);
+            if (child) children.push(child);
+          } else if (node.nodeType === Node.TEXT_NODE) {
+            const t = (node.textContent || '').trim();
+            if (t) directText.push(t);
+          }
+        }
+
+        const textContent = directText.join(' ').trim() || undefined;
+
+        const width = parsePx(style.width);
+        const height = parsePx(style.height);
+        const paddingTop = parsePx(style.paddingTop);
+        const paddingRight = parsePx(style.paddingRight);
+        const paddingBottom = parsePx(style.paddingBottom);
+        const paddingLeft = parsePx(style.paddingLeft);
+        const marginTop = parsePx(style.marginTop);
+        const marginRight = parsePx(style.marginRight);
+        const marginBottom = parsePx(style.marginBottom);
+        const marginLeft = parsePx(style.marginLeft);
+
+        const backgroundColor = parseColor(style.backgroundColor);
+        const color = parseColor(style.color);
+        const borderRadius = parseBorderRadius(style);
+        let fontSize = parsePx(style.fontSize);
+        if (fontSize == null) fontSize = 16;
+        const fontWeight = style.fontWeight ? String(style.fontWeight) : '400';
+        const fontFamily = style.fontFamily ? String(style.fontFamily).split(',')[0].trim() : 'Inter';
+        var gapVal = style.gap || style.columnGap || style.rowGap;
+        var gapPx = gapVal ? parsePx(String(gapVal).split(/\s+/)[0]) : null;
+        var flexGrowVal = style.flexGrow ? parseFloat(style.flexGrow) : 0;
+        if (isNaN(flexGrowVal)) flexGrowVal = 0;
+        if (style.flex && !style.flexGrow) {
+          var flexParts = String(style.flex).trim().split(/\s+/);
+          if (flexParts.length >= 1) { var g = parseFloat(flexParts[0]); if (!isNaN(g)) flexGrowVal = g; }
+        }
+
+        const styles = {
+          display: style.display || 'block',
+          flexDirection: style.flexDirection || 'row',
+          justifyContent: style.justifyContent || 'flex-start',
+          alignItems: style.alignItems || 'stretch',
+          width: width,
+          height: height,
+          paddingTop: paddingTop,
+          paddingRight: paddingRight,
+          paddingBottom: paddingBottom,
+          paddingLeft: paddingLeft,
+          marginTop: marginTop,
+          marginRight: marginRight,
+          marginBottom: marginBottom,
+          marginLeft: marginLeft,
+          backgroundColor: backgroundColor,
+          color: color,
+          borderRadius: borderRadius,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+          fontFamily: fontFamily,
+          gap: gapPx,
+          flexGrow: flexGrowVal,
+          textAlign: (style.textAlign && String(style.textAlign).trim()) || undefined
+        };
+
+        return {
+          type: 'element',
+          tagName: tag,
+          textContent: textContent,
+          styles: styles,
+          children: children
+        };
+      }
+
+      function setStatus(msg, isError) {
+        statusEl.textContent = msg;
+        statusEl.className = isError ? 'error' : '';
+      }
+
+      convertBtn.addEventListener('click', function () {
+        const html = htmlInput.value.trim();
+        if (!html) {
+          setStatus('请输入或粘贴 HTML', true);
+          return;
+        }
+        setStatus('解析中…');
+        // 用 span 包裹（避免用户 HTML 中多余的 </div> 提前闭合根节点）
+        hiddenRoot.innerHTML = '<span class="__root">' + html + '</span>';
+
+        try {
+          const wrapper = hiddenRoot.firstElementChild;
+          if (!wrapper) {
+            setStatus('解析结果为空，请检查 HTML 是否有效', true);
+            return;
+          }
+          const nodeTrees = [];
+          for (let i = 0; i < wrapper.childNodes.length; i++) {
+            const node = wrapper.childNodes[i];
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              const serialized = serializeElement(node);
+              if (serialized) nodeTrees.push(serialized);
+            } else if (node.nodeType === Node.TEXT_NODE) {
+              const t = (node.textContent || '').trim();
+              if (t) {
+                nodeTrees.push({
+                  type: 'text',
+                  textContent: t,
+                  styles: {}
+                });
+              }
+            }
+          }
+
+          if (nodeTrees.length === 0) {
+            setStatus('解析结果为空，请检查 HTML 是否完整、有效（如标签是否成对闭合）', true);
+            return;
+          }
+
+          const rootNode = { type: 'root', children: nodeTrees };
+          parent.postMessage(
+            { pluginMessage: { type: 'render-html-tree', payload: rootNode } },
+            '*'
+          );
+          setStatus('已发送到 Figma，生成中…');
+        } catch (e) {
+          setStatus('解析失败: ' + (e.message || String(e)), true);
+        }
+      });
+
+      // 接收主线程回传：显示错误或完成状态
+      window.onmessage = function (event) {
+        var msg = event.data && event.data.pluginMessage;
+        if (!msg) return;
+        if (msg.type === 'error') {
+          setStatus('错误: ' + (msg.message || ''), true);
+        } else if (msg.type === 'done') {
+          setStatus('已生成到画布');
+        }
+      };
+    })();
+  </script>
+</body>
+</html>
