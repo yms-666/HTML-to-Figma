@@ -155,7 +155,8 @@ function mapFlexDirectionToLayoutMode(cssFlexDirection: string): 'HORIZONTAL' | 
 // ---------------------------------------------------------------------------
 const CONTAINER_TAGS = new Set([
   'div', 'section', 'header', 'footer', 'main', 'article', 'aside', 'nav',
-  'figure', 'figcaption', 'form', 'fieldset', 'ul', 'ol', 'li', 'dl', 'dt', 'dd'
+  'figure', 'figcaption', 'form', 'fieldset', 'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+  'button'
 ]);
 
 function isContainerTag(tagName: string): boolean {
@@ -229,19 +230,28 @@ async function renderNode(
         frame.itemSpacing = gap;
       }
     } else {
-      const textAlign = (styles.textAlign ?? '').trim().toLowerCase();
-      if (textAlign === 'right' || textAlign === 'end') {
-        frame.layoutMode = 'HORIZONTAL';
-        frame.primaryAxisAlignItems = 'MAX';
-        frame.counterAxisAlignItems = mapAlignItems(styles.alignItems ?? 'stretch');
-      } else if (textAlign === 'center') {
+      // 非 flex 容器
+      // - 对于 button：默认水平居中 + 垂直居中子内容（更贴近原生按钮表现）
+      // - 其他容器：根据 text-align 决定主轴对齐，否则按垂直堆叠处理
+      if (tagName === 'button') {
         frame.layoutMode = 'HORIZONTAL';
         frame.primaryAxisAlignItems = 'CENTER';
-        frame.counterAxisAlignItems = mapAlignItems(styles.alignItems ?? 'stretch');
+        frame.counterAxisAlignItems = 'CENTER';
       } else {
-        frame.layoutMode = 'VERTICAL';
-        frame.primaryAxisAlignItems = 'MIN';
-        frame.counterAxisAlignItems = 'MIN';
+        const textAlign = (styles.textAlign ?? '').trim().toLowerCase();
+        if (textAlign === 'right' || textAlign === 'end') {
+          frame.layoutMode = 'HORIZONTAL';
+          frame.primaryAxisAlignItems = 'MAX';
+          frame.counterAxisAlignItems = mapAlignItems(styles.alignItems ?? 'stretch');
+        } else if (textAlign === 'center') {
+          frame.layoutMode = 'HORIZONTAL';
+          frame.primaryAxisAlignItems = 'CENTER';
+          frame.counterAxisAlignItems = mapAlignItems(styles.alignItems ?? 'stretch');
+        } else {
+          frame.layoutMode = 'VERTICAL';
+          frame.primaryAxisAlignItems = 'MIN';
+          frame.counterAxisAlignItems = 'MIN';
+        }
       }
     }
 
