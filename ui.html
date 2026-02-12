@@ -70,6 +70,7 @@
 
       /**
        * 将 "123px" 或 "1.5em" 等解析为数值（px），非数值或 auto 返回 null
+       * 注：em/rem 按根字号 16px 换算，未考虑元素级 font-size 继承
        */
       function parsePx(value) {
         if (!value || value === 'auto' || value === '0') {
@@ -167,13 +168,16 @@
         if (fontSize == null) fontSize = 16;
         const fontWeight = style.fontWeight ? String(style.fontWeight) : '400';
         const fontFamily = style.fontFamily ? String(style.fontFamily).split(',')[0].trim() : 'Inter';
-        var gapVal = style.gap || style.columnGap || style.rowGap;
-        var gapPx = gapVal ? parsePx(String(gapVal).split(/\s+/)[0]) : null;
-        var flexGrowVal = style.flexGrow ? parseFloat(style.flexGrow) : 0;
+        const gapVal = style.gap || style.columnGap || style.rowGap;
+        const gapPx = gapVal ? parsePx(String(gapVal).split(/\s+/)[0]) : null;
+        let flexGrowVal = style.flexGrow ? parseFloat(style.flexGrow) : 0;
         if (isNaN(flexGrowVal)) flexGrowVal = 0;
         if (style.flex && !style.flexGrow) {
-          var flexParts = String(style.flex).trim().split(/\s+/);
-          if (flexParts.length >= 1) { var g = parseFloat(flexParts[0]); if (!isNaN(g)) flexGrowVal = g; }
+          const flexParts = String(style.flex).trim().split(/\s+/);
+          if (flexParts.length >= 1) {
+            const g = parseFloat(flexParts[0]);
+            if (!isNaN(g)) flexGrowVal = g;
+          }
         }
 
         const styles = {
@@ -262,13 +266,14 @@
           );
           setStatus('已发送到 Figma，生成中…');
         } catch (e) {
+          console.error('[HTML to Figma] 解析失败:', e);
           setStatus('解析失败: ' + (e.message || String(e)), true);
         }
       });
 
       // 接收主线程回传：显示错误或完成状态
       window.onmessage = function (event) {
-        var msg = event.data && event.data.pluginMessage;
+        const msg = event.data && event.data.pluginMessage;
         if (!msg) return;
         if (msg.type === 'error') {
           setStatus('错误: ' + (msg.message || ''), true);

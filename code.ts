@@ -5,6 +5,13 @@
  */
 
 // ---------------------------------------------------------------------------
+// 常量
+// ---------------------------------------------------------------------------
+const DEFAULT_FRAME_WIDTH = 375;
+const DEFAULT_FRAME_HEIGHT = 200;
+const DEFAULT_FONT_SIZE = 14;
+
+// ---------------------------------------------------------------------------
 // Node Tree 类型约定（与 ui.html 序列化结构一致）
 // ---------------------------------------------------------------------------
 interface RGB {
@@ -77,6 +84,95 @@ function toSolidPaint(c: RGB): SolidPaint {
     color: toFigmaColor(c),
     opacity: c.a
   };
+}
+
+// ---------------------------------------------------------------------------
+// 公共辅助函数
+// ---------------------------------------------------------------------------
+type LayoutMixinNode = SceneNode & { layoutGrow?: number; layoutAlign?: string };
+
+function hasLayoutGrow(node: SceneNode): node is LayoutMixinNode {
+  return 'layoutGrow' in node;
+}
+
+function hasLayoutAlign(node: SceneNode): node is LayoutMixinNode {
+  return 'layoutAlign' in node;
+}
+
+async function createTextNode(textContent: string, styles: SerializedStyles): Promise<TextNode> {
+  await ensureFontLoaded();
+  const textNode = figma.createText();
+  textNode.fontName = defaultFont;
+  textNode.fontSize = typeof styles.fontSize === 'number' ? styles.fontSize : DEFAULT_FONT_SIZE;
+  textNode.characters = textContent;
+  if (styles.color) {
+    textNode.fills = [toSolidPaint(styles.color)];
+  }
+  return textNode;
+}
+
+function applyFrameSizes(frame: FrameNode, styles: SerializedStyles): void {
+  const w = styles.width;
+  const h = styles.height;
+  if (typeof w === 'number' && w > 0 && typeof h === 'number' && h > 0) {
+    frame.resize(w, h);
+  } else if (typeof w === 'number' && w > 0) {
+    frame.resize(w, 100);
+  } else if (typeof h === 'number' && h > 0) {
+    frame.resize(1, h);
+  }
+}
+
+function applyFramePaddingAndFill(frame: FrameNode, styles: SerializedStyles): void {
+  const pt = styles.paddingTop ?? 0;
+  const pr = styles.paddingRight ?? 0;
+  const pb = styles.paddingBottom ?? 0;
+  const pl = styles.paddingLeft ?? 0;
+  if (typeof pt === 'number') frame.paddingTop = pt;
+  if (typeof pr === 'number') frame.paddingRight = pr;
+  if (typeof pb === 'number') frame.paddingBottom = pb;
+  if (typeof pl === 'number') frame.paddingLeft = pl;
+
+  const radius = styles.borderRadius;
+  if (typeof radius === 'number' && radius >= 0) {
+    frame.cornerRadius = radius;
+  }
+
+  if (styles.backgroundColor) {
+    frame.fills = [toSolidPaint(styles.backgroundColor)];
+  }
+}
+
+function applyFlexChildLayout(frame: FrameNode, styles: SerializedStyles): void {
+  if (frame.layoutMode === 'VERTICAL') {
+    for (const c of frame.children) {
+      if (hasLayoutAlign(c)) c.layoutAlign = 'STRETCH';
+    }
+  }
+  if (frame.layoutMode !== 'NONE') {
+    let hasFlexChild = false;
+    for (const c of frame.children) {
+      if (hasLayoutGrow(c) && c.layoutGrow === 1) {
+        frame.primaryAxisSizingMode = 'FIXED';
+        hasFlexChild = true;
+        break;
+      }
+    }
+    if (hasFlexChild) {
+      const isHorizontal = frame.layoutMode === 'HORIZONTAL';
+      const primarySize = isHorizontal ? styles.width : styles.height;
+      if (primarySize == null || primarySize <= 0) {
+        if (isHorizontal) frame.resize(DEFAULT_FRAME_WIDTH, frame.height);
+        else frame.resize(frame.width, DEFAULT_FRAME_HEIGHT);
+      }
+    }
+  }
+}
+
+function setLayoutGrowIfNeeded(created: SceneNode | null, child: SerializedNode): void {
+  if (created && hasLayoutGrow(created) && child.styles && (child.styles.flexGrow ?? 0) > 0) {
+    created.layoutGrow = 1;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -196,15 +292,8 @@ async function renderNode(
   }
 
   if (node.type === 'text') {
-    await ensureFontLoaded();
-    const textNode = figma.createText();
-    textNode.fontName = defaultFont;
     const styles = node.styles ?? {};
-    textNode.fontSize = typeof styles.fontSize === 'number' ? styles.fontSize : 14;
-    textNode.characters = node.textContent ?? '';
-    if (styles.color) {
-      textNode.fills = [toSolidPaint(styles.color)];
-    }
+    const textNode = await createTextNode(node.textContent ?? '', styles);
     parent.appendChild(textNode);
     return textNode;
   }
@@ -255,106 +344,50 @@ async function renderNode(
       }
     }
 
-    const w = styles.width;
-    const h = styles.height;
-    if (typeof w === 'number' && w > 0 && typeof h === 'number' && h > 0) {
-      frame.resize(w, h);
-    } else if (typeof w === 'number' && w > 0) {
-      frame.resize(w, 100);
-    } else if (typeof h === 'number' && h > 0) {
-      frame.resize(1, h);
-    }
-
-    const pt = styles.paddingTop ?? 0;
-    const pr = styles.paddingRight ?? 0;
-    const pb = styles.paddingBottom ?? 0;
-    const pl = styles.paddingLeft ?? 0;
-    if (typeof pt === 'number') frame.paddingTop = pt;
-    if (typeof pr === 'number') frame.paddingRight = pr;
-    if (typeof pb === 'number') frame.paddingBottom = pb;
-    if (typeof pl === 'number') frame.paddingLeft = pl;
-
-    const radius = styles.borderRadius;
-    if (typeof radius === 'number' && radius >= 0) {
-      frame.cornerRadius = radius;
-    }
-
-    if (styles.backgroundColor) {
-      frame.fills = [toSolidPaint(styles.backgroundColor)];
-    }
-
+    applyFrameSizes(frame, styles);
+    applyFramePaddingAndFill(frame, styles);
     parent.appendChild(frame);
 
     // 先添加文本子节点（若有），再添加子元素，以保持顺序
     if (node.textContent && node.textContent.trim()) {
-      await ensureFontLoaded();
-      const textNode = figma.createText();
-      textNode.fontName = defaultFont;
-      textNode.fontSize = typeof styles.fontSize === 'number' ? styles.fontSize : 14;
-      textNode.characters = node.textContent.trim();
-      if (styles.color) {
-        textNode.fills = [toSolidPaint(styles.color)];
-      }
+      const textNode = await createTextNode(node.textContent.trim(), styles);
       frame.appendChild(textNode);
     }
 
+    const isHorizontal = frame.layoutMode === 'HORIZONTAL';
     for (const child of children) {
       const mt = child.styles?.marginTop ?? 0;
       const mb = child.styles?.marginBottom ?? 0;
-      const needMarginWrap = (typeof mt === 'number' && mt > 0) || (typeof mb === 'number' && mb > 0);
+      const ml = child.styles?.marginLeft ?? 0;
+      const mr = child.styles?.marginRight ?? 0;
+      const needVerticalMargin = (typeof mt === 'number' && mt > 0) || (typeof mb === 'number' && mb > 0);
+      const needHorizontalMargin = (typeof ml === 'number' && ml > 0) || (typeof mr === 'number' && mr > 0);
+      const needMarginWrap = needVerticalMargin || needHorizontalMargin;
+
       let targetParent: ContainerNode = frame;
       if (needMarginWrap) {
         const wrap = figma.createFrame();
         wrap.name = 'margin-wrap';
-        wrap.layoutMode = 'VERTICAL';
+        wrap.layoutMode = isHorizontal ? 'HORIZONTAL' : 'VERTICAL';
         wrap.fills = [];
         if (typeof mt === 'number' && mt > 0) wrap.paddingTop = mt;
         if (typeof mb === 'number' && mb > 0) wrap.paddingBottom = mb;
+        if (typeof ml === 'number' && ml > 0) wrap.paddingLeft = ml;
+        if (typeof mr === 'number' && mr > 0) wrap.paddingRight = mr;
         frame.appendChild(wrap);
         targetParent = wrap as ContainerNode;
       }
       const created = await renderNode(child, targetParent);
-      if (created && 'layoutGrow' in created && child.styles && (child.styles.flexGrow ?? 0) > 0) {
-        (created as { layoutGrow: number }).layoutGrow = 1;
-      }
+      setLayoutGrowIfNeeded(created, child);
     }
-    if (frame.layoutMode === 'VERTICAL') {
-      for (const c of frame.children) {
-        if ('layoutAlign' in c) (c as { layoutAlign: string }).layoutAlign = 'STRETCH';
-      }
-    }
-    if (frame.layoutMode !== 'NONE') {
-      let hasFlexChild = false;
-      for (const c of frame.children) {
-        if ('layoutGrow' in c && (c as { layoutGrow: number }).layoutGrow === 1) {
-          frame.primaryAxisSizingMode = 'FIXED';
-          hasFlexChild = true;
-          break;
-        }
-      }
-      if (hasFlexChild) {
-        const isHorizontal = frame.layoutMode === 'HORIZONTAL';
-        const primarySize = isHorizontal ? styles.width : styles.height;
-        if (primarySize == null || primarySize <= 0) {
-          if (isHorizontal) frame.resize(375, frame.height);
-          else frame.resize(frame.width, 200);
-        }
-      }
-    }
+    applyFlexChildLayout(frame, styles);
 
     return frame;
   }
 
   // 文本型元素（p, span, h1 等）：创建 Frame + Text 或仅 Text
   if (node.type === 'element') {
-    await ensureFontLoaded();
-    const textNode = figma.createText();
-    textNode.fontName = defaultFont;
-    textNode.fontSize = typeof styles.fontSize === 'number' ? styles.fontSize : 14;
-    textNode.characters = node.textContent ?? '';
-    if (styles.color) {
-      textNode.fills = [toSolidPaint(styles.color)];
-    }
+    const textNode = await createTextNode(node.textContent ?? '', styles);
 
     const hasLayout = (styles.display === 'flex' || styles.display === 'flexbox') && children.length > 0;
     if (hasLayout || children.length > 0) {
@@ -365,44 +398,16 @@ async function renderNode(
       frame.counterAxisAlignItems = mapAlignItems(styles.alignItems ?? 'stretch');
       const gap = styles.gap;
       if (typeof gap === 'number' && gap >= 0) frame.itemSpacing = gap;
-      const pt = styles.paddingTop ?? 0;
-      const pr = styles.paddingRight ?? 0;
-      const pb = styles.paddingBottom ?? 0;
-      const pl = styles.paddingLeft ?? 0;
-      if (typeof pt === 'number') frame.paddingTop = pt;
-      if (typeof pr === 'number') frame.paddingRight = pr;
-      if (typeof pb === 'number') frame.paddingBottom = pb;
-      if (typeof pl === 'number') frame.paddingLeft = pl;
-      if (typeof styles.borderRadius === 'number') frame.cornerRadius = styles.borderRadius;
-      if (styles.backgroundColor) frame.fills = [toSolidPaint(styles.backgroundColor)];
+      applyFramePaddingAndFill(frame, styles);
       parent.appendChild(frame);
       if (node.textContent && node.textContent.trim()) {
         frame.appendChild(textNode);
       }
       for (const child of children) {
         const created = await renderNode(child, frame);
-        if (created && 'layoutGrow' in created && child.styles && (child.styles.flexGrow ?? 0) > 0) {
-          (created as { layoutGrow: number }).layoutGrow = 1;
-        }
+        setLayoutGrowIfNeeded(created, child);
       }
-      if (frame.layoutMode !== 'NONE') {
-        let hasFlexChild = false;
-        for (const c of frame.children) {
-          if ('layoutGrow' in c && (c as { layoutGrow: number }).layoutGrow === 1) {
-            frame.primaryAxisSizingMode = 'FIXED';
-            hasFlexChild = true;
-            break;
-          }
-        }
-        if (hasFlexChild) {
-          const isHorizontal = frame.layoutMode === 'HORIZONTAL';
-          const primarySize = isHorizontal ? styles.width : styles.height;
-          if (primarySize == null || primarySize <= 0) {
-            if (isHorizontal) frame.resize(375, frame.height);
-            else frame.resize(frame.width, 200);
-          }
-        }
-      }
+      applyFlexChildLayout(frame, styles);
       return frame;
     }
 
@@ -444,9 +449,11 @@ figma.ui.onmessage = async (msg: { type?: string; payload?: SerializedNode }) =>
 
     figma.ui.postMessage({ type: 'done' });
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[HTML to Figma]', e);
     figma.ui.postMessage({
       type: 'error',
-      message: e instanceof Error ? e.message : String(e)
+      message
     });
   }
 };
